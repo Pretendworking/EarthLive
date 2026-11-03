@@ -10,6 +10,7 @@ class Element {
   constructor() { this.children = []; this.dataset = {}; this.events = {}; this.classList = { contains: () => true }; }
   append(...items) { for (const item of items) item.fragment ? this.children.push(...item.children) : this.children.push(item); }
   replaceChildren() { this.children = []; }
+  insertBefore(item, before) { this.children.splice(this.children.indexOf(before), 0, item); }
   setAttribute() {}
   addEventListener(name, handler) { this.events[name] = handler; }
   set innerHTML(value) { this.firstElementChild = new Element(); }
@@ -21,7 +22,7 @@ test("50,000-camera drawer renders bounded pages, with every camera reachable", 
   const drawer = new Element();
   const cameras = Array.from({ length: 50000 }, (_, i) => ({ camera_key: String(i), name: `Camera ${i}`, source: "tfl" }));
   const context = vm.createContext({
-    cameras, activeCamera: null, cameraFilters: {}, cameraListPage: 0, cameraListFilterKey: "", CAMERA_PAGE_SIZE: 100,
+    cameras, activeCamera: null, favoriteCameraKeys: new Set(), cameraFilters: {}, cameraListPage: 0, cameraListFilterKey: "", CAMERA_PAGE_SIZE: 100,
     document: { createElement: () => new Element(), createDocumentFragment: () => Object.assign(new Element(), { fragment: true }) },
     $: id => id === "camera-list" ? list : drawer,
     getFilteredCameras: () => cameras, cameraKey: c => c.camera_key, cameraStatus: () => "unverified", formatCoordinates: () => "",
@@ -66,7 +67,8 @@ test("camera switches cancel old video handlers and reject unrelated errors", ()
   const context = vm.createContext({
     video, snapshot: control, cameraPlayer: control, errorOverlay: control, streamMeta: control,
     mediaRequestId: 4, mediaSession: session, hlsPlayer: null, snapshotRefreshTimer: null,
-    clearInterval, $: () => control, activeCamera: { camera_key: "new" }, cameraKey: c => c.camera_key,
+    clearInterval, clearTimeout, recoveryTimer: null, bufferingTimer: null, freshnessTimer: null, mediaRecoveryHandler: null, currentMedia: null,
+    $: () => control, activeCamera: { camera_key: "new" }, cameraKey: c => c.camera_key,
   });
   vm.runInContext(functions("clearVideo", "updateConnectivity"), context);
   vm.runInContext("clearVideo()", context);

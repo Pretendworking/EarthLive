@@ -23,6 +23,37 @@ The NSIS installer is written to `release/`. Building the installer requires a w
 
 ## Using the app
 
+### Version 0.5.0 — globe-first interface
+
+- **Explore / Cameras / Flights** separate the main tasks. Cameras opens the searchable collection on the left. Flights opens flight controls on the left and selected-aircraft details on the right; camera markers and playback are paused when switching to Flights. Leaving Flights stops its polling.
+- **Show planes** centers the map on the last requested regional feed and selects a zoom level that displays individual aircraft. It does not issue an extra API request or bypass cooldowns.
+- **Focus view** temporarily hides panels and counters for an immersive globe; **Exit focus** restores them. Choosing another mode also exits Focus view.
+- The default counter row shows the key totals; **More stats** reveals the remaining camera filters. Display controls and provider details sit in the collapsible **Display & data source** section. Panels use separate left/right positions, independent scrolling, higher contrast and larger text. The header wraps on smaller desktop windows.
+
+### Version 0.4.0 — free regional aircraft tracking
+
+- Enable **Flight Radar** to use **adsb.lol**, the default free regional feed. EarthLive requests reported aircraft within 100 nautical miles of the map center, with a thirty-second refresh target while the app is visible. Move the map and use **Track this area**; it respects the existing cooldown. This is regional receiver coverage, not a full-world feed. Source: [adsb.lol](https://www.adsb.lol/docs/open-data/api), [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+- Find an aircraft in the loaded feed by callsign, ICAO24 or registration, then select **Follow aircraft**. The panel shows provider-reported position, registration, type, altitude and speed where available. Missing values stay unavailable. If a selected plane disappears from a later area response, its panel explicitly says last known position. No movement is predicted between reports.
+- Position age uses the provider timestamp and `seen_pos`; reports over two minutes old or without position timing are marked stale/unknown. Request errors preserve the last response with an error notice. Retry-After and exponential backoff take precedence over the thirty-second target; cooldowns survive app restarts. Updates pause while the app is hidden or Flight Radar is disabled.
+- The provider selector retains the slower **OpenSky worldwide** option with its existing twenty-minute anonymous quota schedule. The providers have separate caches and cooldowns. Switching providers never silently changes a failed regional request into another provider request.
+
+### Version 0.3.0 — day/night and camera clocks
+
+- **Day & night** adds a current, approximate night-side overlay to the globe. Toggle it with the Sun button; the setting is saved locally. The boundary refreshes every minute while visible and immediately when you return to the app. Camera markers remain above the shading.
+- Selecting a camera shows its current local clock, calendar date, time-zone name, and an estimated Daylight / Twilight / Night state. The clock updates once a second while the app is visible. The location-based time zone is estimated offline using `tz-lookup`, with daylight-saving rules applied by the runtime. Locations close to time-zone boundaries can be approximate. If a zone cannot be resolved, the app explicitly shows UTC.
+- Solar shading and daylight state use the [NOAA fractional-year equations](https://gml.noaa.gov/grad/solcalc/solareqns.PDF). They describe current sunlight, not weather, forecast conditions, or the time a camera image was captured. Twilight is the Sun between 0 and 6 degrees below the geometric horizon; atmospheric refraction is not modeled.
+
+### Version 0.2.0
+
+- **Search and favorites:** Open Camera list, search by camera name, city, country or source, and use the star beside a camera to save it. Favorites are kept in the local SQLite database and survive app restarts and repeat imports. Use Favorites only to narrow the list and map. Lists are paged in batches of 100.
+- **More sources:** Sources now offers key-free Finland (Fintraffic / Digitraffic road-weather camera views) and Singapore (LTA via data.gov.sg traffic images) imports. Finland metadata is cached for an hour; open Finnish images refresh every ten minutes. Singapore directories and image URLs refresh at most once per minute while selected. Source failures preserve existing saved records. Imports do not pre-verify every image.
+- **Attribution:** Finnish imagery/data: Fintraffic / Digitraffic, [CC BY 4.0 and service terms](https://www.digitraffic.fi/en/terms-of-service/). Singapore traffic images: Land Transport Authority via [data.gov.sg](https://data.gov.sg/datasets/d_6cdb6b405b25aaaacbaf7689bcc6fae0/view), Singapore Open Data Licence. Provider availability and freshness vary.
+- **Playback recovery:** A failed media request or video retries twice (after two and five seconds); video buffering has a twenty-second timeout while playing. When available, an image is used as a fallback. Switching cameras cancels pending recovery. A manual Retry starts a new attempt. Failed snapshot refreshes may also retry twice; embedded frames remain unverified.
+- **Honest media labels:** The panel distinguishes still images, short TfL clips, embedded players, video files and streams. Singapore exposes a capture timestamp; TfL and Finland may expose a source-file modification time. Missing timestamps stay unknown, and media older than thirty minutes is labeled older. VIDEO READY counts recently verified video playback, including clips; it does not establish continuous live video.
+- **Build and update:** The header shows the app version; Sources shows the build identifier and Check for updates. Update checks read official GitHub releases and never silently install anything. With no published release, the app says so. Code pushes alone do not update the installed build.
+
+To produce a repeatable versioned desktop folder, run `npm run build:desktop`. To select an output folder after running `npm run check`, run `node scripts/build-desktop.cjs <output-directory>`. Keep the entire generated `win-unpacked` folder together and point the EarthLive desktop shortcut to its versioned executable. Use the same local app storage to retain cameras and favorites.
+
 - Open **Sources → Import London cameras** to import available TfL JamCams without an API key. Then choose **United Kingdom / London** in Camera list. Powered by TfL Open Data; see [TfL Open Data and terms](https://tfl.gov.uk/info-for/open-data-users/our-open-data). The import uses the official TfL directory, skips cameras reported unavailable, and updates existing records without duplicating them. Successful directory imports are limited to once per hour; failed attempts have a one-minute cooldown.
 - TfL provides short traffic clips and periodically updated still images, rather than continuous live video. Use **Show latest image / Show traffic clip** to switch views. While open, images refresh every five minutes; a finished clip is refreshed on the same schedule without interrupting playback. Provider availability and capture times vary. A playable clip counts as verified video playback in the existing totals; that does not establish continuous live coverage or image freshness.
 

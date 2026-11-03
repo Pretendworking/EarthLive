@@ -1,8 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("earthlive", {
+  getAppInfo: () => ipcRenderer.invoke("app:get-info"),
+  getCameraTimeZone: (key) => ipcRenderer.invoke("camera:get-timezone", key),
+  checkAppUpdates: () => ipcRenderer.invoke("app:check-updates"),
+  discoverPublicCameras: (source) => ipcRenderer.invoke("camera:discover-public", source),
+  setCameraFavorite: (key, favorite) => ipcRenderer.invoke("camera:set-favorite", key, favorite),
   getFlightState: () => ipcRenderer.invoke("flight:get-state"),
-  refreshFlightData: () => ipcRenderer.invoke("flight:refresh"),
+  refreshFlightData: (center) => ipcRenderer.invoke("flight:refresh", center),
+  setFlightProvider: (provider) => ipcRenderer.invoke("flight:set-provider", provider),
   getCameraState: () => ipcRenderer.invoke("camera:get-state"),
   readClipboard: () => ipcRenderer.invoke("camera:read-clipboard"),
   saveWindyKey: (key) => ipcRenderer.invoke("camera:save-windy-key", key),
