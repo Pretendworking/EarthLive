@@ -55,6 +55,12 @@ let mapLoaded = false;
 let cameraState = null;
 let visibleCameraView = "video";
 let snapshotRefreshTimer = null;
+let mediaSession = null;
+let mediaRequestId = 0;
+let cameraListPage = 0;
+let cameraListFilterKey = "";
+let cameraMarkerSignature = "";
+const CAMERA_PAGE_SIZE = 100;
 let flightRadarEnabled = false;
 let flightState = null;
 let flightRefreshTimer = null;
@@ -111,10 +117,12 @@ function distanceKm(a, b) {
 }
 
 function nearestCamera(location) {
-  if (!cameras.length) return null;
-  return cameras
-    .map((camera) => ({ camera, distance: distanceKm(location, camera) }))
-    .sort((a, b) => a.distance - b.distance)[0];
+  let nearest = null;
+  for (const camera of cameras) {
+    const distance = distanceKm(location, camera);
+    if (!nearest || distance < nearest.distance) nearest = { camera, distance };
+  }
+  return nearest;
 }
 
 function showToast(message) {
@@ -126,6 +134,11 @@ function showToast(message) {
 }
 
 function clearVideo() {
+  mediaRequestId += 1;
+  mediaSession?.abort();
+  mediaSession = null;
+  snapshot.onload = null;
+  snapshot.onerror = null;
   if (hlsPlayer) {
     hlsPlayer.destroy();
     hlsPlayer = null;
@@ -147,7 +160,7 @@ function clearVideo() {
 }
 
 function showStreamError(camera, message) {
-  if (!activeCamera || activeCamera.id !== camera.id) return;
+  if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
   $("video-error-message").textContent = message;
   errorOverlay.hidden = false;
 }
@@ -347,6 +360,9 @@ function stopCamera(message) {
 async function showCamera(camera) {
   activeCamera = camera;
   clearVideo();
+  const requestId = mediaRequestId;
+  mediaSession = new AbortController();
+  const mediaSignal = mediaSession.signal;
   emptyVideo.hidden = true;
   $("panel-eyebrow").textContent = "CAMERA STREAM";
   $("stream-name").textContent = camera.name;
@@ -362,11 +378,11 @@ async function showCamera(camera) {
   try {
     media = await window.earthlive.getCameraMedia(cameraKey(camera));
   } catch (error) {
-    if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+    if (requestId !== mediaRequestId || !activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
     showStreamError(camera, error.message || "Could not load camera media.");
     return;
   }
-  if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+  if (requestId !== mediaRequestId || !activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
   $("open-camera-source").hidden = !media.detailUrl;
   $("open-camera-source").textContent = camera.source === "windy" ? "View on Windy ↗" : "Open source ↗";
   $("open-camera-source").onclick = () => media.detailUrl && window.earthlive.openExternal(media.detailUrl);
@@ -394,6 +410,7 @@ async function showCamera(camera) {
       hlsPlayer.loadSource(streamUrl);
       hlsPlayer.attachMedia(video);
       hlsPlayer.on(Hls.Events.ERROR, (_event, data) => {
+        if (mediaSignal.aborted) return;
         if (data.fatal) {
           const hint = data.type === Hls.ErrorTypes.NETWORK_ERROR
             ? " Check that the stream is online, HTTPS is used, and its server allows cross-origin requests (CORS)."
@@ -408,7 +425,7 @@ async function showCamera(camera) {
       video.src = streamUrl;
       visibleCameraView = "video";
     }
-    video.addEventListener("canplay", () => markCameraWorking(camera, true), { once: true });
+    video.addEventListener("canplay", () => markCameraWorking(camera, true), { once: true, signal: mediaSignal });
     video.addEventListener("error", () => {
       if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
       const errorCode = video.error?.code;
@@ -421,7 +438,7 @@ async function showCamera(camera) {
             : "Playback failed. Check that the camera is online and the URL is correct.";
       showStreamError(camera, reason);
       window.earthlive.updateCameraStatus(cameraKey(camera), "offline", false).then(refreshCameraState);
-    }, { once: true });
+    }, { once: true, signal: mediaSignal });
   } else if (media.playerUrl) {
     cameraPlayer.hidden = false;
     cameraPlayer.src = media.playerUrl;
@@ -472,6 +489,7 @@ async function showCamera(camera) {
       if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera) || visibleCameraView !== "snapshot") return;
       try {
         const freshMedia = await window.earthlive.getCameraMedia(cameraKey(camera));
+        if (mediaSignal.aborted) return;
         if (freshMedia.snapshotUrl) showSnapshot(camera, freshMedia.snapshotUrl);
       } catch (error) {
         console.warn("Could not refresh the Windy webcam image.", error.message);
@@ -556,6 +574,9 @@ function syncMarkers() {
       status: cameraStatus(camera)
     }
   }));
+  const signature = JSON.stringify(features);
+  if (signature === cameraMarkerSignature) return;
+  cameraMarkerSignature = signature;
   map.getSource("camera-records").setData({ type: "FeatureCollection", features });
 }
 
@@ -668,9 +689,14 @@ function applyCameraFilters() {
 }
 
 function renderCameraList() {
+  if (!$("camera-drawer").classList.contains("is-open")) return;
   const list = $("camera-list");
   list.replaceChildren();
   const filtered = getFilteredCameras();
+  const filterKey = JSON.stringify(cameraFilters);
+  if (filterKey !== cameraListFilterKey) cameraListPage = 0;
+  cameraListFilterKey = filterKey;
+  cameraListPage = Math.min(cameraListPage, Math.max(0, Math.ceil(filtered.length / CAMERA_PAGE_SIZE) - 1));
   if (!filtered.length) {
     const empty = document.createElement("div");
     empty.className = "camera-list-empty";
@@ -681,7 +707,9 @@ function renderCameraList() {
     return;
   }
 
-  for (const camera of filtered) {
+  const start = cameraListPage * CAMERA_PAGE_SIZE;
+  const fragment = document.createDocumentFragment();
+  for (const camera of filtered.slice(start, start + CAMERA_PAGE_SIZE)) {
     const row = document.createElement("div");
     row.className = "camera-list-item";
     const button = document.createElement("button");
@@ -721,8 +749,36 @@ function renderCameraList() {
       }).catch((error) => showToast(error.message || "Could not remove camera."));
     });
     row.append(button, remove);
-    list.append(row);
+    fragment.append(row);
   }
+  if (filtered.length > CAMERA_PAGE_SIZE) {
+    const navigation = document.createElement("div");
+    navigation.className = "camera-list-pagination";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.className = "secondary-button";
+    previous.textContent = "Previous";
+    previous.disabled = cameraListPage === 0;
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "secondary-button";
+    next.textContent = "Next";
+    next.disabled = start + CAMERA_PAGE_SIZE >= filtered.length;
+    const summary = document.createElement("span");
+    summary.setAttribute("role", "status");
+    summary.textContent = `${start + 1}–${Math.min(start + CAMERA_PAGE_SIZE, filtered.length)} of ${filtered.length}`;
+    const turnPage = (delta) => {
+      cameraListPage += delta;
+      renderCameraList();
+      list.scrollTop = 0;
+      list.querySelector(".camera-card")?.focus({ preventScroll: true });
+    };
+    previous.addEventListener("click", () => turnPage(-1));
+    next.addEventListener("click", () => turnPage(1));
+    navigation.append(previous, summary, next);
+    fragment.append(navigation);
+  }
+  list.append(fragment);
 }
 
 function openCamera(camera) {
@@ -753,6 +809,7 @@ function openDialog(location = selectedLocation) {
 function openDrawer() {
   $("camera-drawer").classList.add("is-open");
   $("camera-drawer").setAttribute("aria-hidden", "false");
+  renderCameraList();
 }
 
 function closeDrawer() {

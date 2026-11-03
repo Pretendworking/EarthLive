@@ -283,3 +283,12 @@ button { color: inherit; }
   .camera-drawer { left: 10px; top: 10px; bottom: 10px; width: min(330px, calc(100vw - 20px)); }
   .toast { bottom: 225px; }
 }
+.camera-list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 8px;
+  color: #a9b9c6;
+  font-size: 12px;
+}
