@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="ocean" x1="30" y1="26" x2="220" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1b4850"/>
+      <stop offset="1" stop-color="#091921"/>
+    </linearGradient>
+    <linearGradient id="land" x1="58" y1="48" x2="193" y2="207" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#92e8c6"/>
+      <stop offset="1" stop-color="#38a47f"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#09131c"/>
+  <circle cx="128" cy="128" r="95" fill="url(#ocean)" stroke="#baf8df" stroke-width="5"/>
+  <path d="m66 76 17-17 19-4 9 10 18 2 7 11 14 4 5 17-9 12-1 14-13 8-8 17-13 2-6 18-13-5-7-17-16-5-5-14-13-9 4-17-9-13 8-13-4-10Zm93-15 17-9 19 8 6 13-9 10-17-4-8-10-13-8Zm22 57 16-10 18 8 7 17-9 13-15-2-4 11-11 1-7-16 5-12-10-10Zm-78 78 13 6 12 13-4 14-12 9-10-9-4-18 5-15Z" fill="url(#land)"/>
+  <g fill="none" stroke="#d7ffec" stroke-linecap="round" opacity=".8">
+    <ellipse cx="128" cy="128" rx="43" ry="94" stroke-width="2.5"/>
+    <path d="M37 128h182M48 91c48 24 112 24 160 0M48 165c48-24 112-24 160 0" stroke-width="2"/>
+  </g>
+  <circle cx="128" cy="128" r="95" fill="none" stroke="#e5fff3" stroke-width="4"/>
+  <circle cx="203" cy="61" r="10" fill="#62e0b2" stroke="#09131c" stroke-width="5"/>
+</svg>

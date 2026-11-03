@@ -1,0 +1,43 @@
+{
+  "name": "earthlive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A desktop globe with user-configured public camera streams.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check electron/main.cjs && node --check electron/camera-store.cjs && node --check electron/providers/windy.cjs && node --check electron/providers/opensky.cjs && node --check electron/preload.cjs && node --check src/app.js && node --test test/*.test.cjs",
+    "dist:win": "electron-builder --win nsis --publish never"
+  },
+  "dependencies": {
+    "hls.js": "^1.7.4",
+    "maplibre-gl": "^6.16.0"
+  },
+  "devDependencies": {
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.earthlive.desktop",
+    "productName": "EarthLive",
+    "publish": null,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "assets/**/*",
+      "electron/**/*",
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/earthlive.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

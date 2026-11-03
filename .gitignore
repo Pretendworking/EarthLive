@@ -1,0 +1,11 @@
+node_modules/
+release/
+windy api*/
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.lnk
