@@ -283,3 +283,119 @@ button { color: inherit; }
   .camera-drawer { left: 10px; top: 10px; bottom: 10px; width: min(330px, calc(100vw - 20px)); }
   .toast { bottom: 225px; }
 }
+.camera-list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 8px;
+  color: #a9b9c6;
+  font-size: 12px;
+}
+.camera-collection-tools { padding: 0 16px 10px; }
+.camera-collection-tools input[type="search"] { width: 100%; padding: 10px; border: 1px solid #30404a; border-radius: 6px; color: #edf2f4; background: #0b141c; }
+.favorites-filter { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: #b9cbd5; }
+#camera-results { margin: 6px 0 0; font-size: 11px; color: #a9b9c6; }
+.favorite-camera { border: 0; background: none; color: #f1cf72; font-size: 23px; cursor: pointer; padding: 8px; }
+.favorite-camera:focus-visible { outline: 2px solid #72dfbf; border-radius: 5px; }
+#camera-verification-note { line-height: 1.5; }
+.sunlight-controls { position: absolute; z-index: 2; left: 20px; top: 20px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; pointer-events: none; }
+.sunlight-controls button { pointer-events: auto; background: rgba(9, 20, 29, .9); }
+.sunlight-controls button[aria-pressed="true"] { color: #ffe7a2; border-color: #74613e; }
+.solar-utc { color: #b9c9d5; background: rgba(9, 20, 29, .8); border-radius: 4px; padding: 4px 7px; font-size: 10px; }
+.camera-clock { display: flex; flex-direction: column; gap: 4px; margin-top: 11px; padding-top: 10px; border-top: 1px solid #253a44; font-size: 10px; color: #abc0cb; line-height: 1.5; }
+.camera-clock[hidden] { display: none; }
+.camera-local-time { font-size: 20px; color: #f8e6b3; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+.camera-timezone { color: #8da4b1; }
+@media (max-width: 800px) { .sunlight-controls { left: 10px; top: 10px; } }
+.flight-radar-status { top: 104px; max-height: calc(100% - 130px); overflow-y: auto; }
+.flight-radar-status select, .aircraft-search input { min-width: 0; padding: 7px; background: #0b1720; color: #e1eff5; border: 1px solid #35515f; border-radius: 5px; font-size: 11px; }
+.aircraft-search { display: flex; gap: 6px; }
+.aircraft-search input { flex: 1; width: 100%; }
+.flight-radar-status .secondary-button { padding: 7px 9px; font-size: 11px; }
+/* Globe-first workspace: one navigation rail, controls left, details right. */
+:root { --surface: rgba(13, 23, 34, .97); --line: rgba(163, 193, 214, .16); --muted: #a0b1c0; }
+button, select, input { font-family: inherit; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #8be3c5; outline-offset: 3px; }
+.topbar { gap: 20px; padding: 0 24px; height: 76px; flex-basis: 76px; background: #0b1420; }
+.search { flex: 1 1 220px; width: auto; max-width: 430px; border-radius: 12px; background: #121f2d; }
+.topbar-actions { gap: 6px; flex-shrink: 0; }
+.view-toggle, .add-camera-button { height: 40px; border-radius: 9px; font-size: 12px; }
+#explore-mode { order: 0; } #browse-cameras-top { order: 1; } #flight-radar-toggle { order: 2; }
+#imagery-toggle { order: 3; margin-left: 8px; } #add-camera-top { order: 4; } #focus-view { order: 5; }
+.mode-button, #flight-radar-toggle { border-color: transparent; background: #101e2c; }
+.mode-button[aria-pressed="true"], #flight-radar-toggle[aria-pressed="true"] { border-color: #55bca7; background: #173a3c; color: #a9f4d6; }
+#focus-view { border-color: #33485d; color: #b8c9dc; }
+.camera-stats { flex-basis: auto; min-height: 54px; padding: 10px 24px; gap: 4px; flex-wrap: wrap; background: #0e1b29; }
+.stat-item, .stat-update { min-width: 80px; padding: 0 14px; gap: 5px; }
+.stat-label { color: #9eafbf; font-size: 9px; letter-spacing: .6px; }
+.stat-item strong { font-size: 16px; }
+.stat-update { min-width: 150px; }
+body:not([data-stats="expanded"]) [data-camera-scope="snapshots"],
+body:not([data-stats="expanded"]) [data-camera-scope="offline"],
+body:not([data-stats="expanded"]) [data-camera-scope="unverified"] { display: none; }
+#toggle-stats { white-space: nowrap; padding: 8px 10px; font-size: 11px; }
+.source-settings-button { height: 35px; font-size: 11px; border-radius: 8px; }
+.camera-drawer { z-index: 5; left: 20px; top: 20px; bottom: 20px; width: 330px; border-radius: 16px; background: #0e1b29; border-color: #304356; box-shadow: 0 16px 48px #0005; }
+.drawer-header { padding: 20px 18px 14px; }
+.drawer-header h2 { font-size: 19px; }
+.drawer-scope, #camera-results { color: #a8bbca; font-size: 11px; }
+.camera-card { padding-top: 13px; padding-bottom: 13px; }
+.camera-card-text strong { font-size: 12px; }
+.camera-card-text span { color: #a5b7c7; font-size: 11px; }
+.camera-filters select { font-size: 11px; min-height: 35px; }
+.camera-panel { top: 20px; right: 20px; width: 350px; max-height: calc(100% - 40px); overflow-y: auto; border-color: #304356; border-radius: 16px; background: #0e1b29f7; }
+body[data-workspace="flights"] .camera-panel, body[data-workspace="flights"] .panel-reopen,
+body[data-workspace="flights"] .map-legend { display: none; }
+body[data-has-camera="false"] .camera-panel, body[data-has-camera="false"] .panel-reopen { display: none; }
+.panel-header h1 { font-size: 20px; line-height: 1.3; }
+.panel-subtitle { color: #adc0cf; font-size: 12px; line-height: 1.5; }
+.flight-radar-status { top: 20px; left: 20px; width: 330px; max-width: none; max-height: calc(100% - 40px); padding: 18px; gap: 12px; border-radius: 16px; border-color: #304d65; background: #0e1c2bf5; font-size: 12px; }
+.workspace-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-panel-heading h2 { font-size: 20px; margin: 5px 0 0; color: #f0f5fa; font-weight: 600; letter-spacing: -.5px; }
+.workspace-panel-heading .eyebrow { font-size: 9px; color: #8cb9d5; letter-spacing: 1.5px; }
+.workspace-live-badge { color: #90cfb5; background: #17382f; border: 1px solid #2e5a48; border-radius: 5px; padding: 5px; font-size: 8px; letter-spacing: .3px; text-align: center; }
+.flight-radar-status-label { color: #8ccce8; font-size: 9px; line-height: 1.5; }
+.flight-radar-status select, .aircraft-search input { padding: 10px; min-height: 39px; border-radius: 8px; font-size: 12px; }
+.flight-radar-status label { font-size: 11px; }
+.flight-view-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.flight-radar-status .secondary-button { min-height: 38px; font-size: 11px; border-radius: 8px; }
+.flight-view-tip { margin: 0; color: #a8bfd0; font-size: 11px; line-height: 1.6; }
+#flight-radar-message { display: block; color: #d1e2ed; font-size: 11px; line-height: 1.75; padding: 10px; background: #13283a; border-radius: 8px; }
+.flight-radar-limit-note { font-size: 10px; color: #96afc1; line-height: 1.6; }
+.flight-info-panel { left: auto; right: 20px; top: 20px; width: 350px; max-height: calc(100% - 40px); padding: 20px; background: #0e1c2bf7; border-color: #385b73; border-radius: 16px; }
+.flight-info-header h2 { font-size: 21px; }
+.flight-info-grid { font-size: 12px; grid-template-columns: 1fr 1.2fr; gap: 12px; }
+.flight-info-grid dt { color: #9eb4c5; }
+.follow-aircraft-button { padding: 12px; font-size: 12px; border-radius: 9px; background: #1b455b; }
+.sunlight-controls { top: 20px; left: 50%; transform: translateX(-50%); flex-direction: row; align-items: center; gap: 8px; }
+.solar-utc { padding: 8px; font-size: 10px; }
+.workspace-hint { position: absolute; z-index: 2; left: 50%; bottom: 46px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 7px; max-width: 450px; width: calc(100% - 180px); text-align: center; padding: 18px 24px; border: 1px solid #334b5c; border-radius: 16px; color: #b0c4d2; background: #0d1c2be8; pointer-events: none; font-size: 12px; line-height: 1.6; }
+.workspace-hint-label { font-size: 9px; letter-spacing: 2px; color: #8cdac0; }
+.workspace-hint strong { font-size: 23px; font-weight: 500; color: #edf4fa; letter-spacing: -.5px; }
+body:not([data-workspace="explore"]) .workspace-hint, body[data-has-camera="true"] .workspace-hint { display: none; }
+.map-tools { left: 20px; bottom: 32px; }
+.map-legend { left: 76px; bottom: 32px; font-size: 9px; }
+.map-attribution { left: 76px; bottom: 12px; font-size: 10px; }
+body[data-focus="true"] .camera-stats, body[data-focus="true"] .flight-radar-status,
+body[data-focus="true"] .flight-info-panel, body[data-focus="true"] .camera-drawer,
+body[data-focus="true"] .camera-panel, body[data-focus="true"] .panel-reopen,
+body[data-focus="true"] .workspace-hint, body[data-focus="true"] .map-legend { display: none; }
+@media (max-width: 1150px) {
+  .topbar { height: auto; flex-basis: auto; min-height: 76px; flex-wrap: wrap; gap: 12px; padding: 14px 20px; }
+  .search { order: 3; flex: 1 0 100%; max-width: none; }
+  .brand { margin-right: auto; }
+  .topbar-actions { margin-left: 0; }
+  .camera-drawer, .flight-radar-status { width: 290px; left: 16px; top: 16px; max-height: calc(100% - 32px); }
+  .camera-panel, .flight-info-panel { width: 290px; right: 16px; top: 16px; max-height: calc(100% - 32px); }
+  .sunlight-controls { top: auto; bottom: 45px; }
+  .solar-utc { display: none; }
+  .flight-info-grid { font-size: 11px; gap: 10px; }
+  .stat-update { display: none; }
+  .stat-item { min-width: 69px; padding: 0 10px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+.flight-display-settings { border-top: 1px solid #2a4155; padding-top: 12px; }
+.flight-display-settings summary { cursor: pointer; font-size: 11px; color: #b3c9d9; }
+.flight-display-settings label { margin-top: 14px; }
+.flight-display-settings .flight-radar-limit-note { display: block; margin: 12px 0; }

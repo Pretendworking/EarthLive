@@ -1,5 +1,7 @@
 import * as maplibregl from "../node_modules/maplibre-gl/dist/maplibre-gl.mjs";
 import Hls from "../node_modules/hls.js/dist/hls.mjs";
+import { matchesCameraSearch, describeCameraMedia } from "./camera-utils.mjs";
+import { nightGeometry, daylightLabel, formatCameraTime } from "./sunlight.mjs";
 
 const STORAGE_KEY = "earthlive.cameras.v1";
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
@@ -55,8 +57,52 @@ let mapLoaded = false;
 let cameraState = null;
 let visibleCameraView = "video";
 let snapshotRefreshTimer = null;
+let mediaSession = null;
+let mediaRequestId = 0;
+let cameraListPage = 0;
+let cameraListFilterKey = "";
+let cameraMarkerSignature = "";
+let favoriteCameraKeys = new Set();
+let cameraSearchTimer = null;
+let recoveryTimer = null;
+let bufferingTimer = null;
+let freshnessTimer = null;
+let mediaRecoveryHandler = null;
+let currentMedia = null;
+let dayNightEnabled = localStorage.getItem("earthlive.dayNight") !== "off";
+let clockRequest = 0;
+let cameraZone = null;
+const cameraZones = new Map();
+const CAMERA_PAGE_SIZE = 100;
 let flightRadarEnabled = false;
 let flightState = null;
+let flightUpdateGeneration = 0;
+let aircraftMissing = false;
+let aircraftMarkerSignature = "";
+let workspaceMode = "explore";
+
+function setWorkspace(mode) {
+  if (!["explore", "cameras", "flights"].includes(mode)) return;
+  workspaceMode = mode;
+  document.body.dataset.workspace = mode;
+  document.body.dataset.focus = "false";
+  $("focus-view").setAttribute("aria-pressed", "false");
+  $("focus-view").textContent = "Focus view";
+  $("explore-mode").setAttribute("aria-pressed", String(mode === "explore"));
+  $("browse-cameras-top").setAttribute("aria-pressed", String(mode === "cameras"));
+  if (mode !== "cameras") {
+    $("camera-drawer").classList.remove("is-open");
+    $("camera-drawer").setAttribute("aria-hidden", "true");
+  }
+  if (mode !== "flights" && flightRadarEnabled) setFlightRadarEnabled(false);
+  if (mode === "flights" && activeCamera) stopCamera();
+  if (mapLoaded) {
+    for (const layer of ["camera-clusters", "camera-cluster-count", "camera-points"]) {
+      if (map.getLayer(layer)) map.setLayoutProperty(layer, "visibility", mode === "flights" ? "none" : "visible");
+    }
+    requestAnimationFrame(() => map.resize());
+  }
+}
 let flightRefreshTimer = null;
 let flightFreshnessTimer = null;
 let aircraftAltitudeScale = 1;
@@ -111,10 +157,12 @@ function distanceKm(a, b) {
 }
 
 function nearestCamera(location) {
-  if (!cameras.length) return null;
-  return cameras
-    .map((camera) => ({ camera, distance: distanceKm(location, camera) }))
-    .sort((a, b) => a.distance - b.distance)[0];
+  let nearest = null;
+  for (const camera of cameras) {
+    const distance = distanceKm(location, camera);
+    if (!nearest || distance < nearest.distance) nearest = { camera, distance };
+  }
+  return nearest;
 }
 
 function showToast(message) {
@@ -126,6 +174,17 @@ function showToast(message) {
 }
 
 function clearVideo() {
+  clearTimeout(recoveryTimer);
+  clearTimeout(bufferingTimer);
+  clearInterval(freshnessTimer);
+  recoveryTimer = bufferingTimer = freshnessTimer = null;
+  mediaRecoveryHandler = null;
+  currentMedia = null;
+  mediaRequestId += 1;
+  mediaSession?.abort();
+  mediaSession = null;
+  snapshot.onload = null;
+  snapshot.onerror = null;
   if (hlsPlayer) {
     hlsPlayer.destroy();
     hlsPlayer = null;
@@ -147,7 +206,7 @@ function clearVideo() {
 }
 
 function showStreamError(camera, message) {
-  if (!activeCamera || activeCamera.id !== camera.id) return;
+  if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
   $("video-error-message").textContent = message;
   errorOverlay.hidden = false;
 }
@@ -180,6 +239,8 @@ function renderAircraftInfo() {
   const stale = isAircraftStale(aircraft);
   $("flight-info-callsign").textContent = formatFlightValue(aircraft.callsign);
   $("flight-info-icao24").textContent = formatFlightValue(aircraft.icao24);
+  $("flight-info-registration").textContent = formatFlightValue(aircraft.registration);
+  $("flight-info-model").textContent = formatFlightValue(aircraft.model);
   $("flight-info-country").textContent = formatFlightValue(aircraft.originCountry);
   $("flight-info-altitude").textContent = formatFlightValue(
     aircraft.barometricAltitudeM,
@@ -203,8 +264,8 @@ function renderAircraftInfo() {
     aircraft.lastPositionUpdate,
     (timestamp) => new Date(timestamp * 1000).toLocaleString()
   );
-  $("flight-info-freshness").textContent = stale ? "Stale (over 2 minutes old)" : "Fresh (under 2 minutes old)";
-  $("flight-info-freshness").dataset.stale = String(stale);
+  $("flight-info-freshness").textContent = aircraftMissing ? "Not in the latest response; last known position" : stale ? "Stale or position time unknown" : `Reported ${Math.max(0, Math.floor(Date.now() / 1000 - aircraft.lastPositionUpdate))} seconds ago`;
+  $("flight-info-freshness").dataset.stale = String(stale || aircraftMissing);
   $("follow-aircraft").textContent = followAircraftEnabled ? "Stop following" : "Follow aircraft";
 }
 
@@ -219,8 +280,10 @@ function followSelectedAircraft() {
 
 function selectAircraft(aircraft) {
   if (!aircraft) return;
+  setWorkspace("flights");
   selectedAircraftId = aircraft.icao24;
   selectedAircraft = aircraft;
+  aircraftMissing = false;
   followAircraftEnabled = false;
   $("flight-info-panel").hidden = false;
   renderAircraftInfo();
@@ -240,6 +303,7 @@ function syncAircraftMarkers() {
   const aircraft = flightRadarEnabled ? flightState?.data?.aircraft || [] : [];
   const now = Date.now();
   const latestSelectedAircraft = aircraft.find((item) => item.icao24 === selectedAircraftId);
+  aircraftMissing = Boolean(selectedAircraftId && !latestSelectedAircraft);
   if (latestSelectedAircraft) {
     const positionChanged = selectedAircraft &&
       (selectedAircraft.longitude !== latestSelectedAircraft.longitude ||
@@ -248,6 +312,7 @@ function syncAircraftMarkers() {
     renderAircraftInfo();
     if (followAircraftEnabled && positionChanged) followSelectedAircraft();
   }
+  if (aircraftMissing) renderAircraftInfo();
   const features = aircraft.map((item) => ({
     type: "Feature",
     geometry: {
@@ -269,10 +334,18 @@ function syncAircraftMarkers() {
       freshness: isAircraftStale(item, now) ? "stale" : "fresh"
     }
   }));
-  map.getSource("aircraft-positions").setData({ type: "FeatureCollection", features });
+  const signature = JSON.stringify(features);
+  if (signature !== aircraftMarkerSignature) {
+    aircraftMarkerSignature = signature;
+    map.getSource("aircraft-positions").setData({ type: "FeatureCollection", features });
+  }
 }
 
 function renderFlightState() {
+  const provider = flightState?.provider || "adsb.lol";
+  $("flight-provider").value = provider === "OpenSky Network" ? "opensky" : "adsb.lol";
+  $("flight-provider-label").textContent = provider === "adsb.lol" ? "ADSB.LOL · FREE REGIONAL TRACKING" : "OPENSKY NETWORK · WORLD VIEW";
+  $("flight-provider-note").textContent = provider === "adsb.lol" ? "adsb.lol · ODbL 1.0. 100 nautical miles around the requested center; 30-second target, subject to provider limits. No predicted positions." : "OpenSky Network · anonymous worldwide updates every 20 minutes, subject to quota.";
   const data = flightState?.data;
   $("aircraft-count").textContent = String(data?.aircraft.length || 0);
   if (!data) {
@@ -285,37 +358,48 @@ function renderFlightState() {
   const fresh = data.aircraft.length - stale;
   const updateTime = new Date(data.receivedAt).toLocaleTimeString();
   const errorSuffix = flightState.error ? ` · Error: ${flightState.error}` : "";
+  const countdown = Math.max(0, Math.ceil(((flightState.nextRequestAt || 0) - now) / 1000));
+  const region = data.region ? ` · ${data.region.radiusNm} nm around ${data.region.latitude.toFixed(2)}°, ${data.region.longitude.toFixed(2)}°` : " · worldwide";
   const creditsSuffix = Number.isInteger(data.creditsRemaining)
     ? ` · ${data.creditsRemaining.toLocaleString()} API credits remain`
     : "";
   $("flight-radar-message").textContent =
-    `${data.aircraft.length.toLocaleString()} valid positions from ${data.stateVectors.toLocaleString()} state vectors · ${fresh.toLocaleString()} fresh · ${stale.toLocaleString()} stale · Received ${updateTime}${creditsSuffix}${errorSuffix}`;
+    `${provider} · ${data.aircraft.length.toLocaleString()} aircraft${region} · ${fresh.toLocaleString()} fresh · ${stale.toLocaleString()} stale/unknown · Received ${updateTime} · Next request in ${countdown}s${creditsSuffix}${errorSuffix}`;
   syncAircraftMarkers();
 }
 
 function scheduleFlightRefresh() {
   clearTimeout(flightRefreshTimer);
   if (!flightRadarEnabled) return;
+  if (document.hidden) { flightRefreshTimer = setTimeout(refreshFlightPositions, 30000); return; }
   const nextRequestAt = flightState?.nextRequestAt || Date.now() + 20 * 60 * 1000;
   flightRefreshTimer = setTimeout(refreshFlightPositions, Math.max(1000, nextRequestAt - Date.now()));
 }
 
 async function refreshFlightPositions() {
   if (!flightRadarEnabled) return;
+  if (document.hidden) { scheduleFlightRefresh(); return; }
+  const generation = flightUpdateGeneration;
   $("flight-radar-message").textContent = flightState?.data
-    ? "Waiting for the next permitted OpenSky update…"
-    : "Requesting live positions from OpenSky…";
+    ? "Waiting for the next permitted aircraft update…"
+    : "Requesting aircraft positions…";
   try {
-    flightState = await window.earthlive.refreshFlightData();
+    const center = map.getCenter();
+    const result = await window.earthlive.refreshFlightData({ latitude: center.lat, longitude: ((center.lng + 540) % 360) - 180 });
+    if (generation !== flightUpdateGeneration || !flightRadarEnabled) return;
+    flightState = result;
   } catch (error) {
-    flightState = { ...(flightState || {}), error: error.message || "OpenSky request failed." };
+    if (generation !== flightUpdateGeneration || !flightRadarEnabled) return;
+    flightState = { ...(flightState || {}), error: error.message || "Aircraft request failed.", nextRequestAt: Date.now() + 60000 };
   }
   renderFlightState();
   scheduleFlightRefresh();
 }
 
 function setFlightRadarEnabled(enabled) {
+  flightUpdateGeneration++;
   flightRadarEnabled = enabled;
+  if (enabled) setWorkspace("flights");
   $("flight-radar-toggle").setAttribute("aria-pressed", String(enabled));
   $("flight-radar-status").hidden = !enabled;
   for (const layer of ["aircraft-clusters", "aircraft-cluster-count", "aircraft-icons"]) {
@@ -325,28 +409,63 @@ function setFlightRadarEnabled(enabled) {
   }
   if (enabled) {
     clearInterval(flightFreshnessTimer);
-    flightFreshnessTimer = setInterval(renderFlightState, 30000);
+    flightFreshnessTimer = setInterval(() => { if (!document.hidden) renderFlightState(); }, 5000);
     refreshFlightPositions();
   } else {
     clearTimeout(flightRefreshTimer);
     clearInterval(flightFreshnessTimer);
     syncAircraftMarkers();
     closeAircraftInfo();
+    if (workspaceMode === "flights") setWorkspace("explore");
   }
 }
 
 function stopCamera(message) {
   clearVideo();
   activeCamera = null;
+  document.body.dataset.hasCamera = "false";
+  clockRequest += 1;
+  $("camera-clock").hidden = true;
   emptyVideo.hidden = false;
   $("empty-title").textContent = "No camera in this area";
   $("empty-copy").textContent = message || "Satellite and map imagery is not live video. Add a public camera stream to watch this location.";
   $("panel-eyebrow").textContent = map.getZoom() >= 8 ? "CAMERA COVERAGE" : "EXPLORE THE GLOBE";
 }
 
-async function showCamera(camera) {
+async function showCamera(camera, { attempt = 0, resume = false } = {}) {
   activeCamera = camera;
+  document.body.dataset.hasCamera = "true";
   clearVideo();
+  setCameraClock(camera);
+  const requestId = mediaRequestId;
+  mediaSession = new AbortController();
+  const mediaSignal = mediaSession.signal;
+  let recovering = false;
+  let wasPlaying = resume;
+  const recover = (reason) => {
+    if (mediaSignal.aborted || recovering) return;
+    recovering = true;
+    clearTimeout(bufferingTimer);
+    if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
+    video.pause();
+    if (currentMedia?.snapshotUrl && visibleCameraView !== "snapshot") {
+      visibleCameraView = "snapshot";
+      showSnapshot(camera, currentMedia.snapshotUrl);
+      $("toggle-camera-view").textContent = "Try video again";
+    } else {
+      showStreamError(camera, reason);
+      window.earthlive.updateCameraStatus(cameraKey(camera), "offline", false).then(refreshCameraState);
+    }
+    if (attempt < 2) {
+      showToast(`Camera interrupted. Retrying (${attempt + 1}/2)…`);
+      recoveryTimer = setTimeout(() => {
+        if (!mediaSignal.aborted) showCamera(camera, { attempt: attempt + 1, resume: wasPlaying });
+      }, attempt === 0 ? 2000 : 5000);
+    } else {
+      showToast(currentMedia?.snapshotUrl ? "Video unavailable. Showing the available image." : "Camera unavailable. Use Retry to try again.");
+    }
+  };
+  mediaRecoveryHandler = recover;
   emptyVideo.hidden = true;
   $("panel-eyebrow").textContent = "CAMERA STREAM";
   $("stream-name").textContent = camera.name;
@@ -362,14 +481,24 @@ async function showCamera(camera) {
   try {
     media = await window.earthlive.getCameraMedia(cameraKey(camera));
   } catch (error) {
-    if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
-    showStreamError(camera, error.message || "Could not load camera media.");
+    if (requestId !== mediaRequestId || !activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+    recover(error.message || "Could not load camera media.");
     return;
   }
-  if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+  if (requestId !== mediaRequestId || !activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+  currentMedia = media;
+  const updateFreshness = () => {
+    if (mediaSignal.aborted) return;
+    const attribution = camera.source === "tfl" ? "Powered by TfL Open Data · " : camera.source === "finland" ? "Fintraffic / Digitraffic · " : camera.source === "singapore" ? "LTA / data.gov.sg · " : "";
+    $("camera-verification-note").textContent = attribution + describeCameraMedia(camera, visibleCameraView, media.capturedAt, Date.now(), media.timestampBasis);
+  };
   $("open-camera-source").hidden = !media.detailUrl;
   $("open-camera-source").textContent = camera.source === "windy" ? "View on Windy ↗" : "Open source ↗";
   $("open-camera-source").onclick = () => media.detailUrl && window.earthlive.openExternal(media.detailUrl);
+  if (camera.source === "tfl") {
+    $("camera-verification-note").textContent = "Powered by TfL Open Data · periodically updated clips and images; not continuous live video";
+    $("panel-eyebrow").textContent = "LONDON TRAFFIC CAMERA";
+  }
 
   if (media.streamUrl || camera.stream_url) {
     const streamUrl = media.streamUrl || camera.stream_url;
@@ -390,12 +519,12 @@ async function showCamera(camera) {
       hlsPlayer.loadSource(streamUrl);
       hlsPlayer.attachMedia(video);
       hlsPlayer.on(Hls.Events.ERROR, (_event, data) => {
+        if (mediaSignal.aborted) return;
         if (data.fatal) {
           const hint = data.type === Hls.ErrorTypes.NETWORK_ERROR
             ? " Check that the stream is online, HTTPS is used, and its server allows cross-origin requests (CORS)."
             : " The stream may use an unsupported codec or an invalid playlist.";
-          showStreamError(camera, `Stream error (${data.details}).${hint}`);
-          window.earthlive.updateCameraStatus(cameraKey(camera), "offline", false).then(refreshCameraState);
+          recover(`Stream error (${data.details}).${hint}`);
         }
       });
       visibleCameraView = "video";
@@ -404,7 +533,14 @@ async function showCamera(camera) {
       video.src = streamUrl;
       visibleCameraView = "video";
     }
-    video.addEventListener("canplay", () => markCameraWorking(camera, true), { once: true });
+    video.addEventListener("canplay", () => { clearTimeout(bufferingTimer); markCameraWorking(camera, true); }, { once: true, signal: mediaSignal });
+    video.addEventListener("playing", () => clearTimeout(bufferingTimer), { signal: mediaSignal });
+    video.addEventListener("play", () => { wasPlaying = true; }, { signal: mediaSignal });
+    video.addEventListener("pause", () => clearTimeout(bufferingTimer), { signal: mediaSignal });
+    video.addEventListener("waiting", () => {
+      clearTimeout(bufferingTimer);
+      bufferingTimer = setTimeout(() => { if (!video.paused && !video.ended) recover("Playback stalled for 20 seconds."); }, 20000);
+    }, { signal: mediaSignal });
     video.addEventListener("error", () => {
       if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
       const errorCode = video.error?.code;
@@ -415,9 +551,8 @@ async function showCamera(camera) {
           : errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
             ? "This URL or video format is not supported. Use an HLS playlist, H.264/AAC MP4, or WebM stream."
             : "Playback failed. Check that the camera is online and the URL is correct.";
-      showStreamError(camera, reason);
-      window.earthlive.updateCameraStatus(cameraKey(camera), "offline", false).then(refreshCameraState);
-    }, { once: true });
+      recover(reason);
+    }, { once: true, signal: mediaSignal });
   } else if (media.playerUrl) {
     cameraPlayer.hidden = false;
     cameraPlayer.src = media.playerUrl;
@@ -430,22 +565,41 @@ async function showCamera(camera) {
     showStreamError(camera, "This public camera has no current stream or image URL.");
   }
 
-  if (media.snapshotUrl && media.playerUrl) {
+  if (media.snapshotUrl && (media.playerUrl || media.streamUrl)) {
     $("toggle-camera-view").hidden = false;
     $("toggle-camera-view").textContent = "Show latest image";
     $("toggle-camera-view").onclick = () => {
+      clearTimeout(recoveryTimer);
+      clearTimeout(bufferingTimer);
       if (visibleCameraView === "snapshot") {
-        cameraPlayer.hidden = false;
+        if (recovering) { showCamera(camera); return; }
+        errorOverlay.hidden = true;
+        cameraPlayer.hidden = !media.playerUrl;
+        video.hidden = Boolean(media.playerUrl);
         snapshot.hidden = true;
-        visibleCameraView = "player";
+        visibleCameraView = media.playerUrl ? "player" : "video";
         $("toggle-camera-view").textContent = "Show latest image";
       } else {
+        video.pause();
+        errorOverlay.hidden = true;
         cameraPlayer.hidden = true;
         showSnapshot(camera, media.snapshotUrl);
         visibleCameraView = "snapshot";
-        $("toggle-camera-view").textContent = "Show player";
+        $("toggle-camera-view").textContent = media.playerUrl ? "Show player" : "Show traffic clip";
       }
+      updateFreshness();
     };
+  }
+
+  if (camera.source === "tfl") {
+    snapshotRefreshTimer = setInterval(() => {
+      if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+      if (visibleCameraView === "snapshot" && media.snapshotUrl) {
+        showSnapshot(camera, appendCacheBust(media.snapshotUrl));
+      } else if (visibleCameraView === "video" && video.ended && media.streamUrl) {
+        video.src = appendCacheBust(media.streamUrl);
+      }
+    }, 5 * 60 * 1000);
   }
 
   if (camera.source === "windy") {
@@ -453,12 +607,75 @@ async function showCamera(camera) {
       if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera) || visibleCameraView !== "snapshot") return;
       try {
         const freshMedia = await window.earthlive.getCameraMedia(cameraKey(camera));
+        if (mediaSignal.aborted) return;
         if (freshMedia.snapshotUrl) showSnapshot(camera, freshMedia.snapshotUrl);
       } catch (error) {
         console.warn("Could not refresh the Windy webcam image.", error.message);
       }
     }, 8 * 60 * 1000);
   }
+  if (["finland", "singapore"].includes(camera.source)) {
+    let refreshing = false;
+    snapshotRefreshTimer = setInterval(async () => {
+      if (refreshing || document.hidden || mediaSignal.aborted || visibleCameraView !== "snapshot") return;
+      refreshing = true;
+      try {
+        const fresh = await window.earthlive.getCameraMedia(cameraKey(camera));
+        if (mediaSignal.aborted) return;
+        Object.assign(media, fresh);
+        showSnapshot(camera, appendCacheBust(fresh.snapshotUrl));
+        updateFreshness();
+      } catch (error) { showToast(error.message || "Could not refresh camera image."); }
+      finally { refreshing = false; }
+    }, camera.source === "finland" ? 10 * 60 * 1000 : 60000);
+  }
+  updateFreshness();
+  freshnessTimer = setInterval(updateFreshness, 60000);
+  if (resume && visibleCameraView === "video") video.play().catch(() => {});
+}
+
+function renderCameraClock() {
+  if (!activeCamera || document.hidden) return;
+  const now = new Date();
+  const clock = formatCameraTime(cameraZone || "__unavailable__", now);
+  $("camera-local-time").textContent = `${clock.time}${clock.fallback ? " UTC" : " local"}`;
+  $("camera-local-date").textContent = clock.date;
+  $("camera-timezone").textContent = cameraZone ? `${cameraZone.replaceAll("_", " ")} · estimated zone` : "Local time zone unavailable";
+  $("camera-daylight").textContent = `${daylightLabel(activeCamera.latitude, activeCamera.longitude, now)} now · sunlight estimate, not the image capture time`;
+}
+
+function setCameraClock(camera) {
+  const request = ++clockRequest;
+  const key = cameraKey(camera);
+  cameraZone = cameraZones.get(key) || null;
+  $("camera-clock").hidden = false;
+  renderCameraClock();
+  if (cameraZones.has(key)) return;
+  window.earthlive.getCameraTimeZone(key).then(zone => {
+    if (cameraZones.size >= 1000) cameraZones.delete(cameraZones.keys().next().value);
+    cameraZones.set(key, zone);
+    if (request !== clockRequest || !activeCamera || cameraKey(activeCamera) !== key) return;
+    cameraZone = zone;
+    renderCameraClock();
+  }).catch(() => { if (request === clockRequest) { cameraZone = null; renderCameraClock(); } });
+}
+
+function refreshSunlight() {
+  if (document.hidden) return;
+  const now = new Date();
+  $("solar-utc").textContent = `${now.toISOString().slice(11, 16)} UTC · sunlight estimate`;
+  if (mapLoaded && dayNightEnabled && map.getSource("night-side")) map.getSource("night-side").setData(nightGeometry(now));
+  renderCameraClock();
+}
+
+function addSunlightLayer() {
+  map.addSource("night-side", { type: "geojson", data: nightGeometry() });
+  map.addLayer({ id: "night-shading", type: "fill", source: "night-side",
+    layout: { visibility: dayNightEnabled ? "visible" : "none" },
+    paint: { "fill-color": "#02040e", "fill-opacity": 0.48, "fill-antialias": false }
+  }, "camera-clusters");
+  $("day-night-toggle").setAttribute("aria-pressed", String(dayNightEnabled));
+  refreshSunlight();
 }
 
 function appendCacheBust(url) {
@@ -472,10 +689,12 @@ function showSnapshot(camera, url) {
   cameraPlayer.hidden = true;
   video.hidden = true;
   snapshot.hidden = false;
-  snapshot.onload = () => markCameraWorking(camera, false);
+  snapshot.onload = () => { errorOverlay.hidden = true; markCameraWorking(camera, false); };
   snapshot.onerror = () => {
     if (activeCamera && cameraKey(activeCamera) === cameraKey(camera)) {
-      showStreamError(camera, "The camera image could not be loaded. The source may have expired or be unavailable.");
+      const reason = "The camera image could not be loaded. The source may have expired or be unavailable.";
+      if (mediaRecoveryHandler) mediaRecoveryHandler(reason);
+      showStreamError(camera, reason);
       window.earthlive.updateCameraStatus(cameraKey(camera), "offline", false).then(refreshCameraState);
     }
   };
@@ -501,6 +720,11 @@ function setLocation(location, title) {
   $("panel-title").textContent = selectedLocation.name;
   $("panel-location").textContent = map.getZoom() >= 8 ? "Camera coverage near this location" : "Zoom in to explore camera coverage";
   $("coordinate-text").textContent = formatCoordinates(location.latitude, location.longitude);
+
+  if (workspaceMode === "flights") {
+    if (activeCamera) stopCamera();
+    return;
+  }
 
   const result = nearestCamera(location);
   const coverageKm = map.getZoom() >= 12 ? 12 : map.getZoom() >= 9 ? 35 : map.getZoom() >= 7 ? 100 : 0;
@@ -537,11 +761,16 @@ function syncMarkers() {
       status: cameraStatus(camera)
     }
   }));
+  const signature = JSON.stringify(features);
+  if (signature === cameraMarkerSignature) return;
+  cameraMarkerSignature = signature;
   map.getSource("camera-records").setData({ type: "FeatureCollection", features });
 }
 
 function getFilteredCameras() {
   return cameras.filter((camera) =>
+    matchesCameraSearch(camera, cameraFilters.query) &&
+    (!cameraFilters.favoritesOnly || favoriteCameraKeys.has(cameraKey(camera))) &&
     (!cameraFilters.country || camera.country_code === cameraFilters.country || camera.country === cameraFilters.country) &&
     (!cameraFilters.city || camera.city === cameraFilters.city) &&
     (!cameraFilters.type || cameraType(camera) === cameraFilters.type) &&
@@ -561,7 +790,7 @@ function renderStats() {
   $("stat-offline").textContent = String(stats.offline || 0);
   $("stat-unverified").textContent = String(stats.unverified || 0);
   $("stat-countries").textContent = String(stats.countries || 0);
-  const lastDiscovery = cameraState?.windy?.status?.last_discovery_at;
+  const lastDiscovery = cameraState?.lastDiscoveryAt || cameraState?.windy?.status?.last_discovery_at;
   $("stat-last-discovery").textContent = lastDiscovery
     ? new Date(lastDiscovery).toLocaleString()
     : "Not yet";
@@ -570,6 +799,11 @@ function renderStats() {
 }
 
 function openCameraScope(scope) {
+  clearTimeout(cameraSearchTimer);
+  cameraFilters.query = "";
+  cameraFilters.favoritesOnly = false;
+  $("camera-search").value = "";
+  $("favorites-only").checked = false;
   const scopes = {
     all: { label: "All indexed cameras", status: "", mediaType: "", playbackStatus: "" },
     working: { label: "Recently verified working cameras", status: "working", mediaType: "", playbackStatus: "" },
@@ -629,6 +863,7 @@ async function refreshCameraState() {
   try {
     cameraState = await window.earthlive.getCameraState();
     cameras = cameraState.cameras;
+    favoriteCameraKeys = new Set(cameraState.favorites || []);
     renderStats();
     renderFilterOptions();
     syncMarkers();
@@ -649,9 +884,15 @@ function applyCameraFilters() {
 }
 
 function renderCameraList() {
+  if (!$("camera-drawer").classList.contains("is-open")) return;
   const list = $("camera-list");
   list.replaceChildren();
   const filtered = getFilteredCameras();
+  $("camera-results").textContent = `${filtered.length.toLocaleString()} matching cameras`;
+  const filterKey = JSON.stringify(cameraFilters);
+  if (filterKey !== cameraListFilterKey) cameraListPage = 0;
+  cameraListFilterKey = filterKey;
+  cameraListPage = Math.min(cameraListPage, Math.max(0, Math.ceil(filtered.length / CAMERA_PAGE_SIZE) - 1));
   if (!filtered.length) {
     const empty = document.createElement("div");
     empty.className = "camera-list-empty";
@@ -662,7 +903,9 @@ function renderCameraList() {
     return;
   }
 
-  for (const camera of filtered) {
+  const start = cameraListPage * CAMERA_PAGE_SIZE;
+  const fragment = document.createDocumentFragment();
+  for (const camera of filtered.slice(start, start + CAMERA_PAGE_SIZE)) {
     const row = document.createElement("div");
     row.className = "camera-list-item";
     const button = document.createElement("button");
@@ -702,11 +945,56 @@ function renderCameraList() {
       }).catch((error) => showToast(error.message || "Could not remove camera."));
     });
     row.append(button, remove);
-    list.append(row);
+    const favorite = document.createElement("button");
+    favorite.type = "button";
+    favorite.className = "favorite-camera";
+    const isFavorite = favoriteCameraKeys.has(cameraKey(camera));
+    favorite.textContent = isFavorite ? "★" : "☆";
+    favorite.setAttribute("aria-label", `${isFavorite ? "Unfavorite" : "Favorite"} ${camera.name}`);
+    favorite.setAttribute("aria-pressed", String(isFavorite));
+    favorite.addEventListener("click", async () => {
+      favorite.disabled = true;
+      try {
+        favoriteCameraKeys = new Set(await window.earthlive.setCameraFavorite(cameraKey(camera), !isFavorite));
+        syncMarkers();
+        renderCameraList();
+      } catch (error) { favorite.disabled = false; showToast(error.message || "Could not save favorite."); }
+    });
+    row.insertBefore(favorite, remove);
+    fragment.append(row);
   }
+  if (filtered.length > CAMERA_PAGE_SIZE) {
+    const navigation = document.createElement("div");
+    navigation.className = "camera-list-pagination";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.className = "secondary-button";
+    previous.textContent = "Previous";
+    previous.disabled = cameraListPage === 0;
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "secondary-button";
+    next.textContent = "Next";
+    next.disabled = start + CAMERA_PAGE_SIZE >= filtered.length;
+    const summary = document.createElement("span");
+    summary.setAttribute("role", "status");
+    summary.textContent = `${start + 1}–${Math.min(start + CAMERA_PAGE_SIZE, filtered.length)} of ${filtered.length}`;
+    const turnPage = (delta) => {
+      cameraListPage += delta;
+      renderCameraList();
+      list.scrollTop = 0;
+      list.querySelector(".camera-card")?.focus({ preventScroll: true });
+    };
+    previous.addEventListener("click", () => turnPage(-1));
+    next.addEventListener("click", () => turnPage(1));
+    navigation.append(previous, summary, next);
+    fragment.append(navigation);
+  }
+  list.append(fragment);
 }
 
 function openCamera(camera) {
+  if (workspaceMode === "flights") setWorkspace("cameras");
   selectedLocation = { longitude: camera.longitude, latitude: camera.latitude, name: camera.name };
   $("panel-title").textContent = camera.name;
   $("panel-location").textContent = [camera.city, camera.country].filter(Boolean).join(", ") || "Public camera";
@@ -732,13 +1020,16 @@ function openDialog(location = selectedLocation) {
 }
 
 function openDrawer() {
+  setWorkspace("cameras");
   $("camera-drawer").classList.add("is-open");
   $("camera-drawer").setAttribute("aria-hidden", "false");
+  renderCameraList();
 }
 
 function closeDrawer() {
   $("camera-drawer").classList.remove("is-open");
   $("camera-drawer").setAttribute("aria-hidden", "true");
+  if (workspaceMode === "cameras") setWorkspace("explore");
 }
 
 function updateWindySettings() {
@@ -1081,7 +1372,9 @@ map.on("load", () => {
   mapLoaded = true;
   updateConnectivity();
   addCameraMapLayers();
+  addSunlightLayer();
   addAircraftMapLayers();
+  setWorkspace(workspaceMode);
   map.setSky({
     "atmosphere-blend": 0.8,
     "sky-color": "rgb(4, 9, 15)",
@@ -1096,6 +1389,17 @@ map.on("load", () => {
 });
 
 window.addEventListener("offline", updateConnectivity);
+$("day-night-toggle").addEventListener("click", () => {
+  dayNightEnabled = !dayNightEnabled;
+  localStorage.setItem("earthlive.dayNight", dayNightEnabled ? "on" : "off");
+  $("day-night-toggle").setAttribute("aria-pressed", String(dayNightEnabled));
+  if (mapLoaded && map.getLayer("night-shading")) map.setLayoutProperty("night-shading", "visibility", dayNightEnabled ? "visible" : "none");
+  refreshSunlight();
+});
+document.addEventListener("visibilitychange", refreshSunlight);
+setInterval(refreshSunlight, 60000);
+setInterval(renderCameraClock, 1000);
+refreshSunlight();
 window.addEventListener("online", () => {
   if (mapLoaded) {
     $("offline-state").hidden = true;
@@ -1127,6 +1431,61 @@ $("search-form").addEventListener("submit", (event) => {
 });
 $("imagery-toggle").addEventListener("click", toggleImagery);
 $("flight-radar-toggle").addEventListener("click", () => setFlightRadarEnabled(!flightRadarEnabled));
+$("explore-mode").addEventListener("click", () => setWorkspace("explore"));
+$("focus-view").addEventListener("click", () => {
+  const focus = document.body.dataset.focus !== "true";
+  document.body.dataset.focus = String(focus);
+  $("focus-view").setAttribute("aria-pressed", String(focus));
+  $("focus-view").textContent = focus ? "Exit focus" : "Focus view";
+  requestAnimationFrame(() => map.resize());
+});
+$("toggle-stats").addEventListener("click", () => {
+  const expanded = document.body.dataset.stats !== "expanded";
+  document.body.dataset.stats = expanded ? "expanded" : "compact";
+  $("toggle-stats").setAttribute("aria-expanded", String(expanded));
+  $("toggle-stats").textContent = expanded ? "Fewer stats" : "More stats";
+  requestAnimationFrame(() => map.resize());
+});
+$("show-aircraft-area").addEventListener("click", () => {
+  const region = flightState?.data?.region;
+  if (!region) { showToast("Track this area first to load nearby planes."); return; }
+  map.easeTo({ center: [region.longitude, region.latitude], zoom: 7, pitch: 0, duration: 800 });
+});
+$("track-flight-area").addEventListener("click", () => {
+  if (!flightRadarEnabled) setFlightRadarEnabled(true);
+  else refreshFlightPositions();
+});
+$("flight-provider").addEventListener("change", async () => {
+  const select = $("flight-provider");
+  const provider = select.value;
+  select.disabled = true;
+  flightUpdateGeneration++;
+  clearTimeout(flightRefreshTimer);
+  try {
+    flightState = await window.earthlive.setFlightProvider(provider);
+    closeAircraftInfo();
+    renderFlightState();
+    if (flightRadarEnabled) await refreshFlightPositions();
+  } catch (error) {
+    showToast(error.message || "Could not switch aircraft provider.");
+    if (flightRadarEnabled) scheduleFlightRefresh();
+  } finally { select.disabled = false; }
+});
+$("flight-provider-source").addEventListener("click", () => window.earthlive.openExternal(
+  flightState?.provider === "OpenSky Network" ? "https://openskynetwork.github.io/opensky-api/rest.html" : "https://www.adsb.lol/docs/open-data/api"
+));
+$("aircraft-search-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const query = $("aircraft-search").value.trim().toLowerCase();
+  const aircraft = flightState?.data?.aircraft || [];
+  const result = query && (aircraft.find(a => a.icao24 === query || a.callsign?.toLowerCase() === query || a.registration?.toLowerCase() === query) ||
+    aircraft.find(a => [a.icao24, a.callsign, a.registration].some(value => value?.toLowerCase().includes(query))));
+  if (!result) { $("aircraft-search-result").textContent = "No match in the current feed. Track a different area or wait for an update."; return; }
+  selectAircraft(result);
+  followSelectedAircraft();
+  $("aircraft-search-result").textContent = `Selected ${result.callsign || result.icao24}. Use Follow aircraft to keep it centered.`;
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && flightRadarEnabled) refreshFlightPositions(); });
 $("close-flight-info").addEventListener("click", closeAircraftInfo);
 $("follow-aircraft").addEventListener("click", () => {
   if (!selectedAircraft) return;
@@ -1294,6 +1653,74 @@ $("discover-now").addEventListener("click", async () => {
   } finally {
     $("discover-now").disabled = false;
   }
+});
+
+$("discover-tfl").addEventListener("click", async () => {
+  const button = $("discover-tfl");
+  const status = $("tfl-import-status");
+  button.disabled = true;
+  status.textContent = "Loading London's public traffic camera directory…";
+  try {
+    const result = await window.earthlive.discoverTfl();
+    await refreshCameraState();
+    status.textContent = `${result.imported} cameras added, ${result.duplicates} updated; ${result.available} available from TfL. Open Camera list and select United Kingdom / London.`;
+  } catch (error) {
+    status.textContent = error.message || "London camera import failed. Saved cameras are still available.";
+  } finally { button.disabled = false; }
+});
+
+for (const source of ["finland", "singapore"]) {
+  $(`discover-${source}`).addEventListener("click", async () => {
+    const button = $(`discover-${source}`);
+    const status = $(`${source}-import-status`);
+    button.disabled = true;
+    status.textContent = "Loading the official camera directory…";
+    try {
+      const result = await window.earthlive.discoverPublicCameras(source);
+      await refreshCameraState();
+      status.textContent = `${result.imported} cameras added, ${result.duplicates} updated; ${result.available} available. Choose ${source === "finland" ? "Finland" : "Singapore"} in Camera list.`;
+    } catch (error) { status.textContent = error.message || "Camera import failed. Saved cameras are preserved."; }
+    finally { button.disabled = false; }
+  });
+}
+
+$("camera-search").addEventListener("input", () => {
+  clearTimeout(cameraSearchTimer);
+  cameraSearchTimer = setTimeout(() => {
+    cameraFilters.query = $("camera-search").value.trim();
+    cameraListPage = 0;
+    syncMarkers();
+    renderCameraList();
+  }, 150);
+});
+$("favorites-only").addEventListener("change", () => {
+  cameraFilters.favoritesOnly = $("favorites-only").checked;
+  cameraListPage = 0;
+  syncMarkers();
+  renderCameraList();
+});
+window.earthlive.getAppInfo().then(info => {
+  $("app-version").textContent = `v${info.version}`;
+  $("app-version").title = info.build;
+  $("build-info").textContent = `EarthLive v${info.version} · Build ${info.build}. The desktop shortcut opens the latest build installed for you. GitHub code pushes do not update this app automatically.`;
+}).catch(() => { $("app-version").textContent = "Version unavailable"; });
+$("check-app-updates").addEventListener("click", async () => {
+  const button = $("check-app-updates"), status = $("app-update-status");
+  button.disabled = true;
+  status.textContent = "Checking published GitHub releases…";
+  try {
+    const result = await window.earthlive.checkAppUpdates();
+    status.textContent = result.message;
+    if (result.available) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "text-button";
+      open.textContent = "Open release ↗";
+      open.onclick = () => window.earthlive.openExternal(result.url);
+      status.append(document.createElement("br"), open);
+    }
+  } catch (error) { status.textContent = error.message || "Could not check updates. Try again later."; }
+  finally { button.disabled = false; }
 });
 
 window.earthlive.onCameraProgress((progress) => {

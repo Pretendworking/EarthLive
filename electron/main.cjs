@@ -3,6 +3,38 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { CameraStore, createLocalCamera } = require("./camera-store.cjs");
 const { getWebcamsPage, getWebcam } = require("./providers/windy.cjs");
+const { getTflCameras } = require("./providers/tfl.cjs");
+const { createPublicCameraClient, SOURCES: PUBLIC_CAMERA_SOURCES } = require("./providers/public-cameras.cjs");
+const getPublicCameras = createPublicCameraClient();
+const { checkForUpdates } = require("./updates.cjs");
+const { cameraTimeZone } = require("./camera-time.cjs");
+const { fetchAdsbLol, regionFromCenter, REFRESH_INTERVAL_MS: ADSB_REFRESH_MS } = require("./providers/adsb-lol.cjs");
+let aircraftProvider = "adsb.lol";
+let adsbNextRequestAt = 0;
+let adsbLastData = null;
+let adsbError = null;
+let adsbFailures = 0;
+let adsbRequestRunning = false;
+let updateCheck = null;
+let nextUpdateCheck = 0;
+const publicImports = new Set();
+const captureTimes = new Map();
+
+async function getCaptureTime(camera) {
+  if (camera.source === "singapore") return camera.source_updated_at || null;
+  if (!["tfl", "finland"].includes(camera.source)) return null;
+  const cached = captureTimes.get(camera.camera_key);
+  if (cached && Date.now() - cached.checkedAt < 60000) return cached.value;
+  let value = null;
+  try {
+    const response = await fetch(camera.stream_url || camera.snapshot_url, { method: "HEAD", signal: AbortSignal.timeout(2500) });
+    const modified = response.headers.get("last-modified");
+    if (response.ok && Number.isFinite(Date.parse(modified))) value = new Date(modified).toISOString();
+  } catch { /* Capture time is optional; media playback must still be available. */ }
+  if (captureTimes.size >= 500) captureTimes.delete(captureTimes.keys().next().value);
+  captureTimes.set(camera.camera_key, { checkedAt: Date.now(), value });
+  return value;
+}
 const { MIN_REFRESH_INTERVAL_MS, fetchOpenSky } = require("./providers/opensky.cjs");
 
 protocol.registerSchemesAsPrivileged([
@@ -23,6 +55,8 @@ const WINDY_KEY_FILE = "windy-api-key.enc";
 const WINDY_SOURCE = "windy";
 let cameraStore;
 let discoveryRunning = false;
+let tflDiscoveryRunning = false;
+let nextTflAttemptAt = 0;
 let healthCheckRunning = false;
 let lastWindyRequestAt = 0;
 let lastFlightData = null;
@@ -117,7 +151,7 @@ function sendCameraProgress(progress) {
   }
 }
 
-function getFlightState() {
+function getOpenSkyFlightState() {
   return {
     provider: "OpenSky Network",
     refreshIntervalMs: MIN_REFRESH_INTERVAL_MS,
@@ -127,9 +161,9 @@ function getFlightState() {
   };
 }
 
-async function refreshFlightData() {
-  if (flightRequestRunning) return { ...getFlightState(), skipped: true };
-  if (Date.now() < nextFlightRequestAt) return { ...getFlightState(), skipped: true };
+async function refreshOpenSkyFlightData() {
+  if (flightRequestRunning) return { ...getOpenSkyFlightState(), skipped: true };
+  if (Date.now() < nextFlightRequestAt) return { ...getOpenSkyFlightState(), skipped: true };
 
   flightRequestRunning = true;
   nextFlightRequestAt = Date.now() + MIN_REFRESH_INTERVAL_MS;
@@ -151,6 +185,35 @@ async function refreshFlightData() {
   } finally {
     flightRequestRunning = false;
   }
+  return getOpenSkyFlightState();
+}
+
+function getFlightState() {
+  return aircraftProvider === "opensky" ? getOpenSkyFlightState() : {
+    provider: "adsb.lol", refreshIntervalMs: ADSB_REFRESH_MS,
+    nextRequestAt: adsbNextRequestAt, error: adsbError, data: adsbLastData
+  };
+}
+
+async function refreshFlightData(center) {
+  if (aircraftProvider === "opensky") return refreshOpenSkyFlightData();
+  const region = regionFromCenter(center);
+  if (adsbRequestRunning || Date.now() < adsbNextRequestAt) return { ...getFlightState(), skipped: true };
+  adsbRequestRunning = true;
+  adsbNextRequestAt = Date.now() + ADSB_REFRESH_MS;
+  getStore().setSetting("adsbNextRequestAt", adsbNextRequestAt);
+  try {
+    const data = await fetchAdsbLol(region);
+    adsbLastData = data;
+    adsbError = null;
+    adsbFailures = 0;
+    getStore().setSetting("adsbLastData", data);
+  } catch (error) {
+    adsbFailures++;
+    adsbNextRequestAt = Math.max(adsbNextRequestAt, Date.now() + Math.max(error.retryAfterSeconds || 0, Math.min(900, 30 * 2 ** Math.min(adsbFailures, 5))) * 1000);
+    getStore().setSetting("adsbNextRequestAt", adsbNextRequestAt);
+    adsbError = error.message || "adsb.lol could not be reached.";
+  } finally { adsbRequestRunning = false; }
   return getFlightState();
 }
 
@@ -264,8 +327,58 @@ async function checkWindyHealth() {
 }
 
 function registerCameraIpc() {
+  ipcMain.handle("app:get-info", () => ({ version: app.getVersion(), build: "2026-11-03 globe-first-workspace" }));
+  ipcMain.handle("camera:get-timezone", (_event, key) => cameraTimeZone(getStore().getCamera(String(key || ""))));
+  ipcMain.handle("app:check-updates", () => {
+    if (Date.now() >= nextUpdateCheck || !updateCheck) {
+      nextUpdateCheck = Date.now() + 5 * 60 * 1000;
+      updateCheck = checkForUpdates(app.getVersion());
+    }
+    return updateCheck;
+  });
+  ipcMain.handle("camera:set-favorite", (_event, key, favorite) => getStore().setFavorite(String(key || ""), favorite));
+  ipcMain.handle("camera:discover-public", async (_event, source) => {
+    if (!Object.hasOwn(PUBLIC_CAMERA_SOURCES, source)) throw new Error("Unknown camera provider.");
+    if (publicImports.has(source)) throw new Error("This camera import is already running.");
+    publicImports.add(source);
+    try {
+      const cameras = await getPublicCameras(source);
+      const result = getStore().importCameras(cameras);
+      getStore().updateSource(source, { last_discovery_at: Date.now(), total_available: cameras.length, last_error: null });
+      return { ...result, available: cameras.length };
+    } catch (error) {
+      getStore().updateSource(source, { last_error: error.message });
+      throw error;
+    } finally { publicImports.delete(source); }
+  });
+  ipcMain.handle("camera:discover-tfl", async () => {
+    if (tflDiscoveryRunning) throw new Error("London camera import is already running.");
+    const store = getStore();
+    const lastImport = store.getSource("tfl")?.last_discovery_at || 0;
+    if (Date.now() < nextTflAttemptAt || Date.now() - lastImport < 60 * 60 * 1000) {
+      throw new Error("London camera discovery is limited to once per hour. Your saved cameras remain available.");
+    }
+    tflDiscoveryRunning = true;
+    nextTflAttemptAt = Date.now() + 60000;
+    try {
+      const catalog = await getTflCameras();
+      const result = store.importCameras(catalog.cameras);
+      store.updateSource("tfl", { last_discovery_at: Date.now(), total_available: catalog.total, last_error: null });
+      return { ...result, available: catalog.cameras.length };
+    } catch (error) {
+      store.updateSource("tfl", { last_error: error.message });
+      throw error;
+    } finally { tflDiscoveryRunning = false; }
+  });
   ipcMain.handle("flight:get-state", () => getFlightState());
-  ipcMain.handle("flight:refresh", () => refreshFlightData());
+  ipcMain.handle("flight:refresh", (_event, center) => refreshFlightData(center));
+  ipcMain.handle("flight:set-provider", (_event, provider) => {
+    if (!["adsb.lol", "opensky"].includes(provider)) throw new Error("Unknown flight provider.");
+    if (adsbRequestRunning || flightRequestRunning) throw new Error("Wait for the current flight update to finish.");
+    aircraftProvider = provider;
+    getStore().setSetting("aircraftProvider", provider);
+    return getFlightState();
+  });
 
   ipcMain.handle("camera:get-state", async () => {
     const store = getStore();
@@ -278,6 +391,8 @@ function registerCameraIpc() {
     };
     return {
       cameras: store.listCameras(),
+      favorites: store.getFavorites(),
+      lastDiscoveryAt: Math.max(...["windy", "tfl", "finland", "singapore"].map(name => store.getSource(name)?.last_discovery_at || 0)),
       stats: store.getStats(),
       filters: store.getFilters(),
       settings,
@@ -327,14 +442,22 @@ function registerCameraIpc() {
   ipcMain.handle("camera:discover-windy", () => discoverWindy());
 
   ipcMain.handle("camera:get-media", async (_event, cameraKey) => {
-    const camera = getStore().getCamera(String(cameraKey || ""));
+    let camera = getStore().getCamera(String(cameraKey || ""));
     if (!camera) throw new Error("Camera record was not found.");
+    if (camera.source === "singapore") {
+      const fresh = (await getPublicCameras("singapore")).find(c => c.cameraKey === camera.camera_key);
+      if (!fresh) throw new Error("This Singapore camera is no longer in the provider's current response.");
+      getStore().importCameras([fresh]);
+      camera = getStore().getCamera(camera.camera_key);
+    }
     if (camera.source !== WINDY_SOURCE) {
       return {
         streamUrl: camera.stream_url,
         snapshotUrl: camera.snapshot_url,
         playerUrl: camera.player_url,
-        detailUrl: camera.detail_url
+        detailUrl: camera.detail_url,
+        capturedAt: await getCaptureTime(camera),
+        timestampBasis: camera.source === "singapore" ? "Provider capture time" : "Provider file modification time"
       };
     }
     const apiKey = await getWindyKey();
@@ -345,7 +468,8 @@ function registerCameraIpc() {
       streamUrl: fresh.streamUrl || null,
       snapshotUrl: fresh.snapshotUrl,
       playerUrl: fresh.playerUrl,
-      detailUrl: fresh.detailUrl || camera.detail_url
+      detailUrl: fresh.detailUrl || camera.detail_url,
+      capturedAt: null
     };
   });
 
@@ -385,6 +509,9 @@ app.whenReady().then(() => {
   cameraStore = new CameraStore(path.join(app.getPath("userData"), "earthlive.sqlite"));
   nextFlightRequestAt = cameraStore.getSetting("openskyNextRequestAt", 0);
   lastFlightData = cameraStore.getSetting("openskyLastState", null);
+  aircraftProvider = cameraStore.getSetting("aircraftProvider", "adsb.lol");
+  adsbNextRequestAt = cameraStore.getSetting("adsbNextRequestAt", 0);
+  adsbLastData = cameraStore.getSetting("adsbLastData", null);
   registerCameraIpc();
   protocol.handle("earthlive", async (request) => {
     if (request.method !== "GET" && request.method !== "HEAD") {

@@ -6,6 +6,9 @@ const CAMERA_TYPES = new Set(["traffic", "webcam"]);
 const MEDIA_TYPES = new Set(["video", "snapshot", "embed", "unknown"]);
 
 function fingerprint(camera) {
+  if (["tfl", "finland", "singapore"].includes(camera.source) && camera.sourceId) {
+    return createHash("sha256").update(`${camera.source}:${camera.sourceId}`).digest("hex");
+  }
   const mediaUrl = camera.detailUrl || camera.streamUrl || camera.url || camera.playerUrl || camera.snapshotUrl;
   let identity;
   if (mediaUrl) {
@@ -83,6 +86,7 @@ class CameraStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS camera_favorites (camera_key TEXT PRIMARY KEY);
     `);
     const cameraColumns = this.db.prepare("PRAGMA table_info(cameras)").all().map((column) => column.name);
     if (!cameraColumns.includes("playback_status")) {
@@ -165,7 +169,20 @@ class CameraStore {
   }
 
   deleteCamera(cameraKey) {
+    this.db.prepare("DELETE FROM camera_favorites WHERE camera_key = ?").run(cameraKey);
     return this.db.prepare("DELETE FROM cameras WHERE camera_key = ?").run(cameraKey).changes;
+  }
+
+  getFavorites() {
+    return this.db.prepare("SELECT camera_key FROM camera_favorites ORDER BY camera_key").all().map(row => row.camera_key);
+  }
+
+  setFavorite(cameraKey, favorite) {
+    if (!this.getCamera(cameraKey)) throw new Error("Camera was not found.");
+    if (typeof favorite !== "boolean") throw new Error("Favorite must be true or false.");
+    if (favorite) this.db.prepare("INSERT OR IGNORE INTO camera_favorites (camera_key) VALUES (?)").run(cameraKey);
+    else this.db.prepare("DELETE FROM camera_favorites WHERE camera_key = ?").run(cameraKey);
+    return this.getFavorites();
   }
 
   updateStatus(cameraKey, status, playbackVerified = false) {
