@@ -6,6 +6,9 @@ const CAMERA_TYPES = new Set(["traffic", "webcam"]);
 const MEDIA_TYPES = new Set(["video", "snapshot", "embed", "unknown"]);
 
 function fingerprint(camera) {
+  if (camera.source === "tfl" && camera.sourceId) {
+    return createHash("sha256").update(`tfl:${camera.sourceId}`).digest("hex");
+  }
   const mediaUrl = camera.detailUrl || camera.streamUrl || camera.url || camera.playerUrl || camera.snapshotUrl;
   let identity;
   if (mediaUrl) {

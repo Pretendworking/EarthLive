@@ -6,7 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check electron/main.cjs && node --check electron/camera-store.cjs && node --check electron/providers/windy.cjs && node --check electron/providers/opensky.cjs && node --check electron/preload.cjs && node --check src/app.js && node --test test/*.test.cjs",
+    "check": "node --check electron/main.cjs && node --check electron/camera-store.cjs && node --check electron/providers/windy.cjs && node --check electron/providers/tfl.cjs && node --check electron/providers/opensky.cjs && node --check electron/preload.cjs && node --check src/app.js && node --test test/*.test.cjs",
     "dist:win": "electron-builder --win nsis --publish never"
   },
   "dependencies": {

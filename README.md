@@ -23,6 +23,9 @@ The NSIS installer is written to `release/`. Building the installer requires a w
 
 ## Using the app
 
+- Open **Sources → Import London cameras** to import available TfL JamCams without an API key. Then choose **United Kingdom / London** in Camera list. Powered by TfL Open Data; see [TfL Open Data and terms](https://tfl.gov.uk/info-for/open-data-users/our-open-data). The import uses the official TfL directory, skips cameras reported unavailable, and updates existing records without duplicating them. Successful directory imports are limited to once per hour; failed attempts have a one-minute cooldown.
+- TfL provides short traffic clips and periodically updated still images, rather than continuous live video. Use **Show latest image / Show traffic clip** to switch views. While open, images refresh every five minutes; a finished clip is refreshed on the same schedule without interrupting playback. Provider availability and capture times vary. A playable clip counts as verified video playback in the existing totals; that does not establish continuous live coverage or image freshness.
+
 - Drag the spherical globe to rotate it, scroll to zoom, and right-drag to tilt; the on-screen controls also zoom.
 - Search for a place (online geocoding) or enter `latitude, longitude`.
 - Select **Imagery** to view satellite basemap imagery. This imagery is not real-time video.

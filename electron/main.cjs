@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { CameraStore, createLocalCamera } = require("./camera-store.cjs");
 const { getWebcamsPage, getWebcam } = require("./providers/windy.cjs");
+const { getTflCameras } = require("./providers/tfl.cjs");
 const { MIN_REFRESH_INTERVAL_MS, fetchOpenSky } = require("./providers/opensky.cjs");
 
 protocol.registerSchemesAsPrivileged([
@@ -23,6 +24,8 @@ const WINDY_KEY_FILE = "windy-api-key.enc";
 const WINDY_SOURCE = "windy";
 let cameraStore;
 let discoveryRunning = false;
+let tflDiscoveryRunning = false;
+let nextTflAttemptAt = 0;
 let healthCheckRunning = false;
 let lastWindyRequestAt = 0;
 let lastFlightData = null;
@@ -264,6 +267,25 @@ async function checkWindyHealth() {
 }
 
 function registerCameraIpc() {
+  ipcMain.handle("camera:discover-tfl", async () => {
+    if (tflDiscoveryRunning) throw new Error("London camera import is already running.");
+    const store = getStore();
+    const lastImport = store.getSource("tfl")?.last_discovery_at || 0;
+    if (Date.now() < nextTflAttemptAt || Date.now() - lastImport < 60 * 60 * 1000) {
+      throw new Error("London camera discovery is limited to once per hour. Your saved cameras remain available.");
+    }
+    tflDiscoveryRunning = true;
+    nextTflAttemptAt = Date.now() + 60000;
+    try {
+      const catalog = await getTflCameras();
+      const result = store.importCameras(catalog.cameras);
+      store.updateSource("tfl", { last_discovery_at: Date.now(), total_available: catalog.total, last_error: null });
+      return { ...result, available: catalog.cameras.length };
+    } catch (error) {
+      store.updateSource("tfl", { last_error: error.message });
+      throw error;
+    } finally { tflDiscoveryRunning = false; }
+  });
   ipcMain.handle("flight:get-state", () => getFlightState());
   ipcMain.handle("flight:refresh", () => refreshFlightData());
 

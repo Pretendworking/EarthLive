@@ -267,12 +267,16 @@
           <div class="dialog-header">
             <div>
               <p class="eyebrow">CAMERA PROVIDER</p>
-              <h2>Windy Webcams</h2>
+              <h2>Camera sources</h2>
             </div>
             <button id="close-source-dialog" class="icon-button" type="button" aria-label="Close dialog">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
             </button>
           </div>
+          <p class="provider-description"><strong>London traffic cameras — no key needed</strong><br />Import available TfL JamCams with short traffic clips and periodically updated images. These are not continuous live streams. Powered by TfL Open Data.</p>
+          <button id="discover-tfl" class="secondary-button" type="button">Import London cameras</button>
+          <p id="tfl-import-status" class="provider-description" role="status"></p>
+          <p class="provider-docs"><a href="https://tfl.gov.uk/info-for/open-data-users/our-open-data">TfL Open Data and terms ↗</a></p>
           <p class="provider-description">Windy provides a documented worldwide public webcam directory. Its API requires your own API key. Image URLs are short-lived, so EarthLive refreshes them when a camera opens.</p>
           <p class="provider-docs"><a href="https://api.windy.com/keys" id="windy-key-link">Get a Windy API key ↗</a><span> · </span><a href="https://api.windy.com/webcams/docs">API documentation ↗</a></p>
           <label>

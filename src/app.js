@@ -370,6 +370,10 @@ async function showCamera(camera) {
   $("open-camera-source").hidden = !media.detailUrl;
   $("open-camera-source").textContent = camera.source === "windy" ? "View on Windy ↗" : "Open source ↗";
   $("open-camera-source").onclick = () => media.detailUrl && window.earthlive.openExternal(media.detailUrl);
+  if (camera.source === "tfl") {
+    $("camera-verification-note").textContent = "Powered by TfL Open Data · periodically updated clips and images; not continuous live video";
+    $("panel-eyebrow").textContent = "LONDON TRAFFIC CAMERA";
+  }
 
   if (media.streamUrl || camera.stream_url) {
     const streamUrl = media.streamUrl || camera.stream_url;
@@ -430,22 +434,37 @@ async function showCamera(camera) {
     showStreamError(camera, "This public camera has no current stream or image URL.");
   }
 
-  if (media.snapshotUrl && media.playerUrl) {
+  if (media.snapshotUrl && (media.playerUrl || media.streamUrl)) {
     $("toggle-camera-view").hidden = false;
     $("toggle-camera-view").textContent = "Show latest image";
     $("toggle-camera-view").onclick = () => {
       if (visibleCameraView === "snapshot") {
-        cameraPlayer.hidden = false;
+        errorOverlay.hidden = true;
+        cameraPlayer.hidden = !media.playerUrl;
+        video.hidden = Boolean(media.playerUrl);
         snapshot.hidden = true;
-        visibleCameraView = "player";
+        visibleCameraView = media.playerUrl ? "player" : "video";
         $("toggle-camera-view").textContent = "Show latest image";
       } else {
+        video.pause();
+        errorOverlay.hidden = true;
         cameraPlayer.hidden = true;
         showSnapshot(camera, media.snapshotUrl);
         visibleCameraView = "snapshot";
-        $("toggle-camera-view").textContent = "Show player";
+        $("toggle-camera-view").textContent = media.playerUrl ? "Show player" : "Show traffic clip";
       }
     };
+  }
+
+  if (camera.source === "tfl") {
+    snapshotRefreshTimer = setInterval(() => {
+      if (!activeCamera || cameraKey(activeCamera) !== cameraKey(camera)) return;
+      if (visibleCameraView === "snapshot" && media.snapshotUrl) {
+        showSnapshot(camera, appendCacheBust(media.snapshotUrl));
+      } else if (visibleCameraView === "video" && video.ended && media.streamUrl) {
+        video.src = appendCacheBust(media.streamUrl);
+      }
+    }, 5 * 60 * 1000);
   }
 
   if (camera.source === "windy") {
@@ -1294,6 +1313,20 @@ $("discover-now").addEventListener("click", async () => {
   } finally {
     $("discover-now").disabled = false;
   }
+});
+
+$("discover-tfl").addEventListener("click", async () => {
+  const button = $("discover-tfl");
+  const status = $("tfl-import-status");
+  button.disabled = true;
+  status.textContent = "Loading London's public traffic camera directory…";
+  try {
+    const result = await window.earthlive.discoverTfl();
+    await refreshCameraState();
+    status.textContent = `${result.imported} cameras added, ${result.duplicates} updated; ${result.available} available from TfL. Open Camera list and select United Kingdom / London.`;
+  } catch (error) {
+    status.textContent = error.message || "London camera import failed. Saved cameras are still available.";
+  } finally { button.disabled = false; }
 });
 
 window.earthlive.onCameraProgress((progress) => {

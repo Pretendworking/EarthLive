@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("earthlive", {
   clearWindyKey: () => ipcRenderer.invoke("camera:clear-windy-key"),
   updateCameraSettings: (settings) => ipcRenderer.invoke("camera:update-settings", settings),
   discoverWindy: () => ipcRenderer.invoke("camera:discover-windy"),
+  discoverTfl: () => ipcRenderer.invoke("camera:discover-tfl"),
   getCameraMedia: (cameraKey) => ipcRenderer.invoke("camera:get-media", cameraKey),
   saveUserCamera: (camera) => ipcRenderer.invoke("camera:save-user", camera),
   importLegacyCameras: (cameras) => ipcRenderer.invoke("camera:import-legacy", cameras),
